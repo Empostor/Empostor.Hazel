@@ -55,8 +55,11 @@ jobs:
           set -euo pipefail
           sed -i "s|<VersionPrefix>[^<]*</VersionPrefix>|<VersionPrefix>${{ steps.ver.outputs.version }}</VersionPrefix>|" Directory.Build.props
 
+      - name: Build
+        run: dotnet build Hazel.sln -c Release --nologo
+
       - name: Pack
-        run: dotnet pack Hazel.sln -c Release -p:VersionSuffix= -o artifacts --nologo
+        run: dotnet pack Hazel.sln -c Release -p:VersionSuffix= -o artifacts --no-build --nologo
 
       # Trusted publishing: exchanges the GitHub OIDC token for a short-lived
       # nuget.org API key tied to the policy (no secret needed).
