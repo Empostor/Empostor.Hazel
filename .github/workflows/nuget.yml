@@ -1,0 +1,88 @@
+name: nuget
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Auto version: start from <VersionPrefix>, bump the patch number until
+      # neither package id exists with that version on nuget.org. The bumped
+      # version is written back into Directory.Build.props and committed, so
+      # the repo always shows the version that was actually published.
+      - name: Resolve next version
+        id: ver
+        run: |
+          set -euo pipefail
+          BASE=$(sed -n 's/.*<VersionPrefix>\([^<]*\)<\/VersionPrefix>.*/\1/p' Directory.Build.props | head -1)
+          MAJOR=${BASE%.*.*}
+          REST=${BASE#*.*.}
+          MINOR=${REST%%.*}
+          PATCH=${REST#*.}
+          LIST=$(
+            for ID in empostor.hazel empostor.hazel.abstractions; do
+              curl -sf "https://api.nuget.org/v3-flatcontainer/$ID/index.json" | jq -r '.versions[]' 2>/dev/null || true
+            done | sort -u
+          )
+          V="$BASE"
+          while echo "$LIST" | grep -qx "$V"; do
+            PATCH=$((PATCH + 1))
+            V="$MAJOR.$MINOR.$PATCH"
+          done
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: $V"
+
+      - name: Bump version in repo
+        run: |
+          set -euo pipefail
+          sed -i "s|<VersionPrefix>[^<]*</VersionPrefix>|<VersionPrefix>${{ steps.ver.outputs.version }}</VersionPrefix>|" Directory.Build.props
+
+      - name: Pack
+        run: dotnet pack Hazel.sln -c Release -p:VersionSuffix= -o artifacts --nologo
+
+      - name: Push to nuget.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          ls -la artifacts
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::warning::NUGET_API_KEY secret is not set; skipping push."
+            exit 0
+          fi
+          dotnet nuget push "artifacts/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          dotnet nuget push "artifacts/*.snupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate || true
+
+      - name: Commit version bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Directory.Build.props
+          if git diff --cached --quiet; then
+            echo "Version unchanged, nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: bump package version to ${{ steps.ver.outputs.version }}"
+          git push
