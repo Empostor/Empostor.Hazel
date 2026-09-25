@@ -11,6 +11,9 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -55,22 +58,24 @@ jobs:
       - name: Pack
         run: dotnet pack Hazel.sln -c Release -p:VersionSuffix= -o artifacts --nologo
 
+      # Trusted publishing: exchanges the GitHub OIDC token for a short-lived
+      # nuget.org API key tied to the policy (no secret needed).
+      - name: NuGet login (trusted publishing)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ELinmei
+
       - name: Push to nuget.org
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           set -euo pipefail
           ls -la artifacts
-          if [ -z "$NUGET_API_KEY" ]; then
-            echo "::warning::NUGET_API_KEY secret is not set; skipping push."
-            exit 0
-          fi
           dotnet nuget push "artifacts/*.nupkg" \
-            --api-key "$NUGET_API_KEY" \
+            --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
           dotnet nuget push "artifacts/*.snupkg" \
-            --api-key "$NUGET_API_KEY" \
+            --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate || true
 
